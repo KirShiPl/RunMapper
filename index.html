@@ -5,9 +5,15 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>RunMapper 2026</title>
     
-    <!-- Leaflet CSS -->
+    <!-- PWA Settings -->
+    <link rel="manifest" href="manifest.json">
+    <meta name="theme-color" content="#2563eb">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <link rel="apple-touch-icon" href="icon.png">
+
+    <!-- Leaflet & Fonts -->
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-    <!-- Fonts -->
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
     
     <style>
@@ -29,6 +35,8 @@
         header {
             background: var(--bg-card);
             padding: 16px 24px;
+            /* Учет "челки" на iPhone */
+            padding-top: max(16px, env(safe-area-inset-top)); 
             display: flex; justify-content: space-between; align-items: center;
             border-bottom: 1px solid #e2e8f0;
             position: sticky; top: 0; z-index: 50;
@@ -55,7 +63,7 @@
         .btn-primary:active { transform: scale(0.98); }
 
         /* LAYOUT */
-        .container { max-width: 1200px; margin: 30px auto; padding: 0 20px; }
+        .container { max-width: 1200px; margin: 30px auto; padding: 0 20px; padding-bottom: 50px; }
         .stats-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; margin-bottom: 24px; }
         .card { background: var(--bg-card); border-radius: var(--radius); padding: 24px; box-shadow: var(--shadow); border: 1px solid #f1f5f9; position: relative; }
         
@@ -294,30 +302,31 @@
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     
     <script>
-        // --- CONSTANTS ---
+        // --- PWA SERVICE WORKER REGISTRATION ---
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('./sw.js')
+                    .then(reg => console.log('SW registered'))
+                    .catch(err => console.log('SW failed', err));
+            });
+        }
+
+        // --- APP LOGIC ---
         const GOAL_KM = 1000;
         const START_COORDS = [54.3520, 18.6466]; 
         const END_COORDS = [53.8945, 30.3313];   
         const CHALLENGE_END_DATE = new Date('2026-12-31');
         const RUNNER_IMG_URL = "https://png.pngtree.com/png-vector/20251120/ourlarge/pngtree-dynamic-silhouette-of-a-runner-in-motion-against-dark-background-png-image_18021046.webp";
 
-        // --- STATE ---
         let runLog = JSON.parse(localStorage.getItem('run_log')) || [];
-        // Support old data format migration
         if(runLog.length === 0 && localStorage.getItem('run_progress')) {
             let old = parseFloat(localStorage.getItem('run_progress'));
             if(old > 0) runLog.push({date: new Date().toISOString().split('T')[0], dist: old});
         }
 
-        let map = null;
-        let marker = null;
-        let lineDone = null;
-        let lineLeft = null;
-        let chartInstance = null;
-        let routeCoords = [];
-        let routeLen = 0;
+        let map = null, marker = null, lineDone = null, lineLeft = null, chartInstance = null;
+        let routeCoords = [], routeLen = 0;
 
-        // --- GLOBAL FUNCTIONS (Accessible by HTML) ---
         function openAddModal() {
             document.getElementById('inp-date').value = new Date().toISOString().split('T')[0];
             document.getElementById('inp-dist').value = '';
@@ -325,9 +334,7 @@
             document.getElementById('inp-dist').focus();
         }
 
-        function closeModal(id) {
-            document.getElementById(id).style.display = 'none';
-        }
+        function closeModal(id) { document.getElementById(id).style.display = 'none'; }
 
         function openSettings() {
             const json = JSON.stringify(runLog);
@@ -344,9 +351,7 @@
                 localStorage.setItem('run_log', JSON.stringify(runLog));
                 updateUI();
                 closeModal('addModal');
-            } else {
-                alert("Please enter a valid distance.");
-            }
+            } else { alert("Enter valid distance"); }
         }
 
         function copyCode() {
@@ -376,21 +381,13 @@
 
         function resetApp() {
             if(confirm("Delete ALL data?")) {
-                localStorage.removeItem('run_log'); 
-                localStorage.removeItem('run_progress');
-                runLog=[]; 
-                updateUI(); 
-                location.reload();
+                localStorage.removeItem('run_log'); localStorage.removeItem('run_progress');
+                runLog=[]; updateUI(); location.reload();
             }
         }
 
-        // --- APP INIT ---
-        document.addEventListener('DOMContentLoaded', () => {
-            initMap();
-            updateUI();
-        });
+        document.addEventListener('DOMContentLoaded', () => { initMap(); updateUI(); });
 
-        // --- LOGIC ---
         function getTotal() { return runLog.reduce((a, b) => a + b.dist, 0); }
 
         function updateUI() {
@@ -403,7 +400,6 @@
             document.getElementById('goal-pct').innerText = pct.toFixed(1) + '% Completed';
             document.getElementById('prog-fill-bar').style.width = pct + '%';
 
-            // Challenge Math
             const today = new Date();
             const diffTime = CHALLENGE_END_DATE - today;
             const daysLeft = Math.max(1, Math.ceil(diffTime / (1000 * 60 * 60 * 24)));
@@ -422,7 +418,6 @@
             L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png').addTo(map);
             L.control.zoom({position: 'topleft'}).addTo(map);
 
-            // Using simple CircleMarkers for robustness (no _icon hacking)
             L.circleMarker(START_COORDS, {color: '#2563eb', radius: 6, fillOpacity: 1})
              .addTo(map).bindTooltip("Gdańsk", {permanent:true, className:"lbl-tooltip", direction:"top"});
              
@@ -436,8 +431,6 @@
                 routeLen = calcLen(routeCoords);
                 updateMapPos(true);
             } catch(e) {
-                console.error("Map route failed", e);
-                // Fallback line
                 routeCoords = [START_COORDS, END_COORDS];
                 routeLen = getD(START_COORDS, END_COORDS);
                 updateMapPos(true);
@@ -515,7 +508,6 @@
             });
         }
 
-        // --- MATH ---
         function getD(p1,p2){ 
             const R=6371, dL=(p2[0]-p1[0])*Math.PI/180, dl=(p2[1]-p1[1])*Math.PI/180;
             const a=Math.sin(dL/2)**2+Math.cos(p1[0]*Math.PI/180)*Math.cos(p2[0]*Math.PI/180)*Math.sin(dl/2)**2;
